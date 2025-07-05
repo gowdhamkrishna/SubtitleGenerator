@@ -54,6 +54,7 @@ export default function Home() {
   const [resizeStart, setResizeStart] = useState({ x: 0, y: 0, width: 0, height: 0 });
   const [downloading, setDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
+  const [downloadStatus, setDownloadStatus] = useState('');
   const fileInputRef = useRef();
   const videoRef = useRef();
   const overlayRef = useRef();
@@ -121,29 +122,38 @@ export default function Home() {
 
   const handleDownload = async () => {
     if (!videoFile) {
-      alert("Please upload a video file first. Subtitle overlay is not implemented yet; download will return the original video.");
+      alert("Please upload a video file first.");
       return;
     }
     setDownloading(true);
     setDownloadProgress(0);
+    setDownloadStatus('Preparing video...');
     try {
       const formData = new FormData();
       formData.append("video", videoFile);
       // Send all subtitle style info
       const styledSubtitles = subtitles.map(seg => ({
         ...seg,
-        textColor,
-        fontFamily,
-        fontSize
+        textColor: seg.textColor || textColor,
+        fontFamily: seg.fontFamily || fontFamily,
+        fontSize: seg.fontSize || fontSize,
+        isBold: seg.isBold !== undefined ? seg.isBold : isBold,
+        isItalic: seg.isItalic !== undefined ? seg.isItalic : isItalic,
+        isUnderline: seg.isUnderline !== undefined ? seg.isUnderline : isUnderline,
+        isShadow: seg.isShadow !== undefined ? seg.isShadow : isShadow
       }));
       formData.append("subtitles", JSON.stringify(styledSubtitles));
       formData.append("videoWidth", videoWidthState);
       formData.append("videoHeight", videoHeightState);
+      
+      setDownloadStatus('Rendering video...');
       const res = await fetch("/api/render", {
         method: "POST",
         body: formData,
       });
       if (!res.ok) throw new Error("Failed to render video");
+      
+      setDownloadStatus('Downloading...');
       const contentLength = res.headers.get('Content-Length');
       const total = contentLength ? parseInt(contentLength, 10) : 0;
       const reader = res.body.getReader();
@@ -154,21 +164,27 @@ export default function Home() {
         if (done) break;
         chunks.push(value);
         received += value.length;
-        if (total) setDownloadProgress(Math.round((received / total) * 100));
+        if (total) {
+          const progress = Math.round((received / total) * 100);
+          setDownloadProgress(progress);
+          setDownloadStatus(`Downloading... ${progress}%`);
+        }
       }
       const blob = new Blob(chunks, { type: 'video/mp4' });
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = "video_with_text.mp4";
+      a.download = "video_with_subtitles.mp4";
       document.body.appendChild(a);
       a.click();
       a.remove();
       window.URL.revokeObjectURL(url);
       setDownloadProgress(100);
+      setDownloadStatus('Download complete!');
     } catch (err) {
       alert("Failed to download video: " + err.message);
       setDownloadProgress(0);
+      setDownloadStatus('Download failed');
     }
     setDownloading(false);
   };
@@ -295,11 +311,68 @@ export default function Home() {
     return () => videoRef.current.removeEventListener('timeupdate', onTimeUpdate);
   }, [playUntil]);
 
+  // Add keyboard event handlers for video control
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      // Only handle keyboard events when video is loaded and focused
+      if (!videoRef.current || !videoUrl) return;
+      
+      // Prevent default behavior for these keys
+      if (['ArrowLeft', 'ArrowRight', ' '].includes(e.code)) {
+        e.preventDefault();
+      }
+
+      switch (e.code) {
+        case 'ArrowLeft':
+          // Seek backward by 1 second
+          const newTimeBack = Math.max(0, videoRef.current.currentTime - 1);
+          videoRef.current.currentTime = newTimeBack;
+          break;
+        case 'ArrowRight':
+          // Seek forward by 1 second
+          const newTimeForward = Math.min(videoRef.current.duration, videoRef.current.currentTime + 1);
+          videoRef.current.currentTime = newTimeForward;
+          break;
+        case 'Space':
+          // Toggle play/pause from current position
+          if (videoRef.current.paused) {
+            // Ensure we play from the current time position
+            const currentPosition = videoRef.current.currentTime;
+            videoRef.current.play().then(() => {
+              // Double-check the position after play starts
+              if (videoRef.current.currentTime !== currentPosition) {
+                videoRef.current.currentTime = currentPosition;
+              }
+            }).catch(err => {
+              console.log('Play failed:', err);
+            });
+          } else {
+            videoRef.current.pause();
+          }
+          break;
+      }
+    };
+
+    // Add event listener with capture to ensure it runs before other handlers
+    window.addEventListener('keydown', handleKeyDown, true);
+    
+    // Cleanup
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown, true);
+    };
+  }, [videoUrl]);
+
   return (
     <div className="flex flex-col min-h-screen bg-gradient-to-br from-blue-50 to-purple-100">
       {/* Sticky header */}
       <header className="sticky top-0 z-20 bg-white/80 backdrop-blur shadow-sm py-4 mb-2">
         <h1 className="text-3xl font-extrabold text-center text-purple-700 tracking-tight">🎬 Subtitle Overlay Editor</h1>
+        {/* Add keyboard shortcuts info */}
+        <div className="text-center text-sm text-gray-600 mt-2">
+          <span className="bg-gray-100 px-2 py-1 rounded mx-1">←</span> 1s back
+          <span className="bg-gray-100 px-2 py-1 rounded mx-1">→</span> 1s forward  
+          <span className="bg-gray-100 px-2 py-1 rounded mx-1">Space</span> play/pause
+        </div>
       </header>
       <div className="flex flex-col md:flex-row gap-8 w-full max-w-6xl mx-auto px-2 md:px-0">
         {/* Main left column: Upload, Video, Add, List */}
@@ -367,10 +440,10 @@ export default function Home() {
                         onChange={e => handleSubtitleChange("text", e.target.value)}
                         className="text-center bg-transparent resize-none outline-none border-none shadow-none w-full h-full rounded-xl"
                         style={{
-                          color: findSubtitleAtTime(subtitles, currentTime).textColor || textColor,
+                          color: findSubtitleAtTime(subtitles, currentTime).textColor || '#ffffff',
                           background: bgCss,
-                          fontFamily: findSubtitleAtTime(subtitles, currentTime).fontFamily || fontFamily,
-                          fontSize: (findSubtitleAtTime(subtitles, currentTime).fontSize || fontSize) * scale,
+                          fontFamily: findSubtitleAtTime(subtitles, currentTime).fontFamily || 'Arial',
+                          fontSize: (findSubtitleAtTime(subtitles, currentTime).fontSize || 48) * scale,
                           fontWeight: findSubtitleAtTime(subtitles, currentTime).isBold ? 'bold' : 'normal',
                           fontStyle: findSubtitleAtTime(subtitles, currentTime).isItalic ? 'italic' : 'normal',
                           textDecoration: findSubtitleAtTime(subtitles, currentTime).isUnderline ? 'underline' : 'none',
@@ -627,19 +700,25 @@ export default function Home() {
                 onClick={handleDownload}
                 className="bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 transition text-white px-6 py-3 rounded-lg text-lg font-semibold w-full shadow-lg flex items-center justify-center gap-2"
                 disabled={!videoFile || downloading}
-                title="Download video with embedded subtitles (not yet implemented)"
+                title="Download video with embedded subtitles"
               >
                 {downloading ? (
-                  <span className="flex items-center gap-2"><svg className="animate-spin h-5 w-5" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" /></svg> Processing...</span>
+                  <span className="flex items-center gap-2">
+                    <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
+                    </svg>
+                    {downloadStatus}
+                  </span>
                 ) : (
-                  <>Download (original video only)</>
+                  <>Download Video with Subtitles</>
                 )}
               </button>
               {downloading && (
                 <div className="w-full mt-2">
                   <div className="h-3 bg-gray-200 rounded-full overflow-hidden">
                     <div
-                      className="h-full bg-blue-500 transition-all"
+                      className="h-full bg-blue-500 transition-all duration-300"
                       style={{ width: `${downloadProgress}%` }}
                     ></div>
                   </div>
