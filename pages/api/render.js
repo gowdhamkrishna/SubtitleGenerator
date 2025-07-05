@@ -10,21 +10,31 @@ export const config = {
   },
 };
 
+// Function to escape special characters for ASS format
 function assEscape(text) {
-  return text.replace(/([{}\\])/g, '\\$1').replace(/\n/g, '\\N');
+  if (!text) return '';
+  return text
+    .replace(/\\/g, '\\\\')
+    .replace(/\{/g, '\\{')
+    .replace(/\}/g, '\\}')
+    .replace(/\n/g, '\\N')
+    .replace(/\r/g, '');
 }
 
 function generateASS(subtitles, videoWidth = 1280, videoHeight = 720) {
-  // Basic ASS header with default style
+  // Enhanced ASS header with high-quality text rendering settings
   let ass = `
 [Script Info]
 ScriptType: v4.00+
 PlayResX: ${videoWidth}
 PlayResY: ${videoHeight}
+WrapStyle: 1
+ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Default,Arial,48,&H00FFFFFF,&H000000FF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,2,2,2,30,30,30,1
+Style: HighRes,Arial,72,&H00FFFFFF,&H000000FF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,3,3,2,40,40,40,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -32,6 +42,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
   for (const sub of subtitles) {
     // Skip watermark/default text
     if (sub.text === "New subtitle at this time") continue;
+    
     // Convert seconds to ASS time (h:mm:ss.cs)
     const toASSTime = s => {
       const h = Math.floor(s / 3600);
@@ -40,35 +51,73 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
       const cs = Math.floor((s * 100) % 100);
       return `${h}:${m.toString().padStart(2, '0')}:${sec.toString().padStart(2, '0')}.${cs.toString().padStart(2, '0')}`;
     };
-    // Positioning: x/y are relative (0-1), convert to pixels
+    
+    // Enhanced positioning with better precision
     const x = Math.round((sub.x ?? 0.5) * videoWidth);
     const y = Math.round((sub.y ?? 0.8) * videoHeight);
-    // Alignment: 2=center, 7=top-left, 9=top-right, 1=bottom-left, 3=bottom-right
-    const alignment = 2;
-    // Text styling (bold, italic, underline)
+    
+    // Use high-resolution style by default
+    let styleName = 'HighRes';
+    
+    // Enhanced text styling with better quality
     let styleTags = '';
+    
+    // Font size scaling for high resolution
+    let fontSize = sub.fontSize || 48;
+    // Scale font size for better quality (1.5x for high-res rendering)
+    const scaledFontSize = Math.round(fontSize * 1.5);
+    styleTags += `{\\fs${scaledFontSize}}`;
+    
+    // Enhanced styling tags
     if (sub.isBold) styleTags += '{\\b1}';
     if (sub.isItalic) styleTags += '{\\i1}';
     if (sub.isUnderline) styleTags += '{\\u1}';
-    // Color (ASS uses &HBBGGRR)
+    
+    // Enhanced color handling with better precision
     let colorTag = '';
     if (sub.textColor) {
-      // Convert #RRGGBB to &HBBGGRR
+      // Convert #RRGGBB to &HBBGGRR with full opacity
       const hex = sub.textColor.replace('#', '');
       if (hex.length === 6) {
         const r = hex.slice(0, 2);
         const g = hex.slice(2, 4);
         const b = hex.slice(4, 6);
-        colorTag = `{\\c&H${b}${g}${r}}`;
+        // Use full opacity (00) for primary color
+        colorTag = `{\\c&H${b}${g}${r}&}`;
       }
     }
-    // Font
+    
+    // Enhanced font family handling
     let fontTag = '';
-    if (sub.fontFamily) fontTag += `{\\fn${sub.fontFamily}}`;
-    if (sub.fontSize) fontTag += `{\\fs${sub.fontSize}}`;
-    // Compose override tags
-    const override = `{\\an${alignment}\\pos(${x},${y})}`;
-    ass += `Dialogue: 0,${toASSTime(sub.start)},${toASSTime(sub.end)},Default,,0,0,0,,${override}${fontTag}${colorTag}${styleTags}${assEscape(sub.text)}\n`;
+    if (sub.fontFamily && sub.fontFamily !== 'sans-serif') {
+      // Map common font families to high-quality alternatives
+      let fontName = sub.fontFamily;
+      if (sub.fontFamily === 'serif') fontName = 'Times New Roman';
+      else if (sub.fontFamily === 'monospace') fontName = 'Courier New';
+      else if (sub.fontFamily.includes('Comic')) fontName = 'Comic Sans MS';
+      else if (sub.fontFamily.includes('Impact')) fontName = 'Impact';
+      
+      fontTag += `{\\fn${fontName}}`;
+    }
+    
+    // Enhanced shadow and outline for better text quality
+    let shadowTag = '';
+    if (sub.isShadow) {
+      // Use stronger shadow for better visibility and quality
+      shadowTag = '{\\shad4}';
+    }
+    
+    // Enhanced outline for crisp text
+    let outlineTag = '{\\outline3}';
+    
+    // Enhanced positioning with better alignment
+    const alignment = 2; // Center alignment
+    const posTag = `{\\an${alignment}\\pos(${x},${y})}`;
+    
+    // Compose all override tags for high-quality rendering
+    const override = `${posTag}${fontTag}${colorTag}${styleTags}${outlineTag}${shadowTag}`;
+    
+    ass += `Dialogue: 0,${toASSTime(sub.start)},${toASSTime(sub.end)},${styleName},,0,0,0,,${override}${assEscape(sub.text)}\n`;
   }
   return ass;
 }
@@ -115,12 +164,17 @@ export default async function handler(req, res) {
     // Output video temp file
     const outputPath = path.join(os.tmpdir(), `video_with_subtitles_${Date.now()}.mp4`);
 
-    // Run ffmpeg to write to file
+    // Run ffmpeg with enhanced settings for high-quality text rendering
     const ffmpegCmd = [
       '-i', videoPath,
       '-vf', `ass=${assPath}`,
-      '-c:a', 'copy',
-      '-y', // Overwrite output file if exists
+      '-c:v', 'libx264',           // Use H.264 codec for better quality
+      '-preset', 'medium',          // Balance between quality and encoding speed
+      '-crf', '18',                // High quality (lower = better quality, 18 is visually lossless)
+      '-c:a', 'copy',              // Copy audio without re-encoding
+      '-pix_fmt', 'yuv420p',       // Ensure compatibility
+      '-movflags', '+faststart',   // Optimize for web streaming
+      '-y',                        // Overwrite output file if exists
       outputPath
     ];
 
